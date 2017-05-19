@@ -1,0 +1,41 @@
+# Hi-C cooler pipeline, options:
+# mapq:           minimum contact mapping quality
+# chromsize_path: path to file containing chromosome sizes
+
+mapq = 10
+chromsize_path = ./misc/hg19_chromsizes.txt
+
+# Hi-C contact files, format:
+# datasets:
+# replicate name,path to file
+#
+# Example,
+# datasets:
+# EXPR,contacts/hic_C019.txt
+# EXPR,contacts/hic_C020.txt
+# CTRL,contacts/hic_C021.txt
+# CTRL,contacts/hic_C022.txt
+
+datasets:
+E6N,../map/contacts/hic_C025.hcf
+E6N,../map/contacts/hic_C030.hcf
+E6P,../map/contacts/hic_C026.hcf
+E6P,../map/contacts/hic_C031.hcf
+E11N,../map/contacts/hic_C027.hcf
+E11N,../map/contacts/hic_C032.hcf
+E11P,../map/contacts/hic_C028.hcf
+E11P,../map/contacts/hic_C033.hcf
+WT,../map/contacts/hic_C029.hcf
+WT,../map/contacts/hic_C129.hcf
+WT,../map/contacts/hic_C034.hcf
+Jurkat,../map/contacts/hic_C025.hcf
+Jurkat,../map/contacts/hic_C030.hcf
+Jurkat,../map/contacts/hic_C026.hcf
+Jurkat,../map/contacts/hic_C031.hcf
+Jurkat,../map/contacts/hic_C027.hcf
+Jurkat,../map/contacts/hic_C032.hcf
+Jurkat,../map/contacts/hic_C028.hcf
+Jurkat,../map/contacts/hic_C033.hcf
+Jurkat,../map/contacts/hic_C029.hcf
+Jurkat,../map/contacts/hic_C129.hcf
+Jurkat,../map/contacts/hic_C034.hcf

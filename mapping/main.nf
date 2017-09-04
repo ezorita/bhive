@@ -104,7 +104,7 @@ index_files.close()
 ** 
 */
 
-def options = ['bfs':null, 'ltr':null, 'rfs':null, 'dist':null, 'mapq':null, 'intq':null]
+def options = ['bfs':null, 'ltr':null, 'rfs':null, 'dist':null, 'mapq':null, 'intq':null, 'intc':null]
 
 mfile = file("${params.options}")
 if (!mfile.isFile()) {
@@ -284,10 +284,10 @@ process mapIntegs {
    cat_head = integ_sites.getExtension() == 'gz' ? "zcat ${integ_sites}" : "cat ${integ_sites}"
 
    """
-    OPTS_36='-k18 -B3 -O5 -T28'
-    OPTS_26='-k17 -r1.3 -B2 -O4 -T22'
-    OPTS_40=''
-    OPTS_50=''
+    OPTS_26='-k17 -r1.3 -B2 -O4 -T22 -L0'
+    OPTS_36='-k18 -B3 -O5 -T28 -L0'
+    OPTS_40='-L0'
+    OPTS_50='-L0'
     SEQLEN=\$((\$(${cat_head} | head -2 | tail -1 | wc -c) - 1));
     if [ \$SEQLEN -le 30 ]; then \
       OPTS=\$OPTS_26; \
@@ -319,12 +319,13 @@ process filterRecombinants {
    file script from best_assignment_src.first()
 
    output:
-   file "*.txt" into integ_list
+   file "*integs*.txt" into integ_list
+   file "*recombinant*.txt" into recombinant_list
    
    script:
-   py_args = (options['mapq'] ? "-q ${options['mapq']} " : "") + (options['intq'] ? "--min-score ${options['intq']}" : "")
+   py_args = (options['mapq'] ? "-q ${options['mapq']} " : "") + (options['intq'] ? "--min-score ${options['intq']} " : "") + (options['intc'] ? "--min-reads ${options['intc']}" : "")
    """
-   python ${script} ${py_args} <(samtools view ${raw_integs}) > ipcr_integs_${sample[0]}.txt
+   python ${script} ${py_args} <(samtools view ${raw_integs}) ipcr_integs_${sample}.txt ipcr_recombinant_${sample}.txt
    """
 }
 
@@ -355,8 +356,10 @@ for fname in files:
 """
 }
 
+
 // Remove duplicate barcodes.
 // If duplicates are integrated in the same locus, keep only one copy.
+// Except if they come from different replicates.
 process removeDuplicates {
    // Process options
    publishDir path: "${params.out}/", mode: 'copy'
@@ -379,15 +382,18 @@ integs = {}
 with open('${integs}','r') as f:
   for line in f:
     if line[0] == '#' or line[0:4] == 'brcd': continue
-    [brcd,chr,locus] = line.split('\t')[0:3]
-    if not integs.has_key(brcd):
-      integs[brcd] = [chr,int(locus),line]
+    [brcd,chr,locus,strand,reads,mapq,rep] = line.rstrip().split('\\t')
+    key = brcd+rep
+    if not integs.has_key(key):
+      integs[key] = [chr,int(locus),line]
     else:
-      if len(integs[brcd]) == 1: continue
+      # If len is 1, it means it has been already discarded (set to 0).
+      if len(integs[key]) == 1: continue
+      # Exists but not yet compared.
       else:
-        if integs[brcd][0] == chr and abs(integs[brcd][1]-int(locus)) < max_dist: continue
+        if integs[key][0] == chr and abs(integs[brcd][1]-int(locus)) < max_dist: continue
         else:
-          integs[brcd] = [0]
+          integs[key] = [0]
 
 with open('hiv_integrations.txt','w+') as fout:
   fout.write('brcd\\tchr\\tlocus\\tstrand\\treads\\tmapq\\trep\\n')

@@ -10,7 +10,7 @@ bfs = TATAGTGAGTCGTA
 ltr = AGCCCTTCCA
 rfs = CGCTTTTA
 dist = 2
-mapq = 20
+mapq = 10
 intq = 10
 
 

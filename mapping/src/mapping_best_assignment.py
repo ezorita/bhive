@@ -9,6 +9,8 @@ parser.add_argument('-q', required=False, default=20, type=int, help="minimum ma
 parser.add_argument('--min-reads', required=False,type=int,default=10,help="minimum # of reads to validate an assignment (default 10)")
 parser.add_argument('--min-score', required=False,type=int,default=10,help="minimum assignment score (default 10)")
 parser.add_argument('mapping_sam', help="SAM alignment file of integration loci with barcode in sequence name")
+parser.add_argument('integ_output',help="Output file for valid integrations.")
+parser.add_argument('filter_output',help="Output file for filtered/recombinant integrations.")
 params = parser.parse_args()
 
 bwa_q_thr = params.q
@@ -19,6 +21,8 @@ strand = ['-','+']
 maps = {}
 bcdset = set()
 
+integ_file = open(params.integ_output,"w")
+recomb_file = open(params.filter_output,"w")
 
 with open(params.mapping_sam) as f:
    for line in f:
@@ -35,10 +39,10 @@ with open(params.mapping_sam) as f:
       dirflag = (flags & 16) > 0
       cigar = m[5]
 
-      # Don't allow soft clipping at the LTR end.
+      # Don't allow soft clipping of > 3nt at the LTR end.
       asymb = re.split('[0-9]+',cigar)[1:]
       avals = re.split('M|S|I|H|D',cigar)[:-1]
-      if (dirflag and asymb[-1] == 'S') or (not dirflag and asymb[0] == 'S'):
+      if (dirflag and asymb[-1] == 'S' and int(avals[-1]) > 3) or (not dirflag and asymb[0] == 'S' and int(avals[0]) > 3):
          continue
 
       # Correct forward strand locus offset.
@@ -119,13 +123,12 @@ for edge in edges:
    else:
       score = 100
    if cnt >= min_reads and score >= min_score:
-      sys.stdout.write(bcdlist[bcd]+'\t'+maps[loclist[loc]][0].replace(':','\t')+'\t'+str(cnt)+'\t'+str(score)+'\n')
+      integ_file.write(bcdlist[bcd]+'\t'+maps[loclist[loc]][0].replace(':','\t')+'\t'+str(cnt)+'\t'+str(score)+'\n')
       bcdsum[bcd] = -1
       locsum[loc] = -1
 
 for loc,cnt in enumerate(locsum):
-   if cnt >= min_reads:
-      locus = maps[loclist[loc]][0].split(':')
-      if locus[0] == 'HIV':
-         continue
-      sys.stdout.write('NA\t'+maps[loclist[loc]][0].replace(':','\t')+'\t'+str(cnt)+'\tNA\n')
+   locus = maps[loclist[loc]][0].split(':')
+   if locus[0] == 'HIV':
+      continue
+   recomb_file.write('NA\t'+maps[loclist[loc]][0].replace(':','\t')+'\t'+str(cnt)+'\tNA\n')

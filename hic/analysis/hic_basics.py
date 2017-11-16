@@ -121,7 +121,7 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,corr_diags=0,ma
         print 'using ICE balancing...'
 
     if eig_dim == None:
-        eig_dim = 2*k
+        eig_dim = k
 
     clusters = {}
     sample_idx = {}

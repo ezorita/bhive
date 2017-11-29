@@ -45,7 +45,7 @@ def interchromosomal_clusters(cf,k,cluster_file,algorithm='eigh-kmeans',interchr
         print "error: algorithm must be either 'eigh-gmix', 'eigh-kmeans' or 'spec-kmeans'"
         
     clusters = {}
-    print "[interchromosomal_clusters] Begin: k={}, cluster_file={}".format(k,cluster_file)
+    print "[interchromosomal_clusters] k={}, cluster_file={}, out_file={}, algorithm={}".format(k,cluster_file,out_file,algorithm)
     # Read and parse intrachromosomal clusters.
     fc = open(cluster_file,"r")
     for line in fc:
@@ -137,18 +137,20 @@ def interchromosomal_clusters(cf,k,cluster_file,algorithm='eigh-kmeans',interchr
                 c_id += 1
     print "[interchromosomal_clusters] Done."
 
-def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,pre_corr_diags=0, corr_diags = 1,max_sample_size=50000,coeffs=None,coeffs_gw=None,seed=None,max_resampling_attempts=10,rearrange_clusters=False,use_ice=False,algorithm='eigh-kmeans'):
+def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,max_sample_size=50000,outlier_pctl=90,corr_outlier_pctl=[5,95],balance_corr_median=False,coeffs=None,coeffs_gw=None,seed=None,max_resampling_attempts=10,rearrange_clusters=False,use_ice=False,algorithm='eigh-kmeans',outdir='.'):
     if algorithm not in ['eigh-gmix','eigh-kmeans','spec-kmeans']:
         print "error: algorithm must be either 'eigh-gmix', 'eigh-kmeans' or 'spec-kmeans'"
         return
+
+    print "[intrachromosomal_clusters] k={}, outdir={}, algorithm={}".format(k,outdir,algorithm)
     if not use_ice:
         if coeffs is None and coeffs_gw is None:
-            print 'computing coeffs...'
+            print 'computing normalization coeffs (local masked OE)...'
             coeffs = oe_coeffs_mask(cf,cf.chromnames)
         elif coeffs is None and coeffs_gw is not None:
-            print 'using GW coeffs'
+            print 'using user-provided global OE coeffs'
     else:
-        print 'using ICE balancing...'
+        print 'using ICE balancing coeffs from cooler file'
 
     if eig_dim == None:
         eig_dim = k
@@ -158,10 +160,10 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,pre_corr_diags=
     clusters_idx = {}
 
     for chr in chrlist:
-        if os.path.isfile('clusters_{}.txt'.format(chr)):
-            print "cluster file for {} (clusters_{}.txt) already exists. Skipping chromosome.".format(chr,chr)
+        if os.path.isfile('{}/clusters_{}.txt'.format(outdir,chr)):
+            print "Warning: {} clusters ({}/clusters_{}.txt) already exist. Skipping chromosome.".format(chr,outdir,chr)
             continue
-            
+        print "[{}] balancing matrix...".format(chr)
         if not use_ice:
             m = cf.matrix(balance=False).fetch(chr)
             # Threshold contacts
@@ -176,7 +178,7 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,pre_corr_diags=
         # Get idx of high quality regions (measured in raw matrix).
         samp_idx = matrix_mask_idx(m_oe)
         sample_idx[chr] = samp_idx
-        print "{} (matrix rows: {}, max sample: {})".format(chr,m.shape[0],samp_idx.shape[0])
+        print "[{}] removing low-quality regions (matrix rows: {}, sample rows: {})...".format(chr,m.shape[0],samp_idx.shape[0])
         # High-quality matrix size
         l = len(samp_idx)
         ssize = min(l,max_sample_size)
@@ -193,13 +195,14 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,pre_corr_diags=
                 s = np.array(samp_idx)
             m_samp = m_oe[s,:][:,s]
             # Relax outliers
-            m_max = np.percentile(m_samp[np.where(m_samp>0)],90)
+            m_max = np.percentile(m_samp[np.where(m_samp>0)],outlier_pctl)
             m_samp[np.where(m_samp > m_max)] = m_max
             if (~m_samp.any(axis=1)).any():
-                print "sample contains all-0 rows. resampling..."
+                print "[{}] sample contains empty rows (singular matrix). resampling ({})...".format(chr,cnt)
                 continue
                 
-            # Remove diagonals before correlation
+            # Remove diagonals before correlation (DISABLED)
+            '''
             if pre_corr_diags > 0:
                 m_cor = np.corrcoef(np.triu(m_samp,pre_corr_diags) + np.tril(m_samp,-pre_corr_diags))
             else:
@@ -210,11 +213,17 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,pre_corr_diags=
                 m_cor = np.triu(m_cor,corr_diags) + np.tril(m_cor,-corr_diags)
             else:
                 np.fill_diagonal(m_cor,0)
-
-            # Increase correlation contrast (5-95 percentiles)
-            #m_cor = m_cor - np.median(m_cor[np.triu_indices(ssize,1)])
-            min_cor_val = np.percentile(m_cor[np.triu_indices(ssize,1)],5)
-            max_cor_val = np.percentile(m_cor[np.triu_indices(ssize,1)],95)
+            '''
+            # Compute correlation and remove diagonal
+            print "[{}] computing correlation matrix and balancing...".format(chr)
+            m_cor = np.corrcoef(m_samp)
+            np.fill_diagonal(m_cor,0)
+            
+            # Increase correlation contrast (5-95 percentiles by default)
+            if balance_corr_median:
+                m_cor = m_cor - np.median(m_cor[np.triu_indices(ssize,1)])
+            min_cor_val = np.percentile(m_cor[np.triu_indices(ssize,1)],corr_outlier_pctl[0])
+            max_cor_val = np.percentile(m_cor[np.triu_indices(ssize,1)],corr_outlier_pctl[1])
             m_cor[np.where(m_cor < min_cor_val)] = min_cor_val
             m_cor[np.where(m_cor > max_cor_val)] = max_cor_val
             return m_cor
@@ -222,34 +231,31 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,pre_corr_diags=
             N = m_cor.shape[0]
             eig_dim = min(N,eig_dim)
             try:
+                print "[{}] computing clusters, algorithm {}...".format(chr,algorithm)
                 if algorithm == 'spec-kmeans':
-                    print "spectral clustering + k-means (k={}) with RBF-generated affinity matrix...".format(k)
                     # some chromosomes crash when using precomputed similarity matrices.
                     # however using RBF seems to give meaningful clustering.
                     spect_clu = SpectralClustering(n_clusters=k, eigen_solver='arpack', affinity='precomputed', assign_labels='kmeans', n_jobs=8)
                     hic_clust = spect_clu.fit_predict(m_cor)
                 else:
-                    print "spectral clustering:\ncomputing SVD (eigh)..."
                     w, v = scipy.linalg.eigh(m_cor, eigvals=(N-eig_dim,N-1))
 
                     if algorithm == 'eigh-gmix':
                         # Cluster eigenvectors using Gaussian Mixture
-                        print "cluster identification with GaussianMixture (k={})...".format(k)
                         gmix = mixture.GaussianMixture(n_components=k, covariance_type='full', tol=1e-4, max_iter=1000)
                         gmix.fit(v)
                         hic_clust = gmix.predict(v)
                     elif algorithm == 'eigh-kmeans':
                         # Cluster eigenvalue/eigenvector products with kmeans.
-                        print 'cluster identification with k-means (k={})...'.format(k)
                         km = KMeans(n_clusters=k,n_jobs=8)
                         hic_clust = km.fit_predict(w*v)
             except:
-                print "error while clustering. resampling..."
+                print "[{}] error while clustering. resampling ({})...".format(chr,cnt)
                 continue
             successful = True
 
         if cnt >= max_resampling_attempts:
-            print "max reampling attempts reached, skipping chromosome."
+            print "[{}] max reampling attempts reached, skipping chromosome.".format(chr)
             continue
 
         # Rearrange clusters for visualization
@@ -263,6 +269,7 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,pre_corr_diags=
             clusters_idx[chr] = [sample_idx[chr][x] for x in clu_idx]
 
         else:
+            print "[{}] rearranging clusters by similarity...".format(chr)
             for i in xrange(k):
                 clu_idx[i] = np.array(clu_idx[i])
 
@@ -332,7 +339,8 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,pre_corr_diags=
             clusters_idx[chr] = [sample_idx[chr][x] for x in clusters[chr]]
 
         # Store in disk
-        fout = open('clusters_{}.txt'.format(chr),'w+')
+        print "[{}] writing clusters to {}/clusters_{}.txt...".format(chr,outdir,chr)
+        fout = open('{}/clusters_{}.txt'.format(outdir,chr),'w+')
         for c in clusters_idx[chr]:
             fout.write("{}\t".format(chr))
             fout.write(','.join([str(i) for i in c]))
@@ -360,6 +368,8 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,pre_corr_diags=
             plot([x,x], [0,l], color='k', linestyle='-', linewidth=1)
         title('{} cluster k={}'.format(chr,k))
         '''
+        
+    print "[intrachromosomal_clusters] Done."
 
     return clusters_idx, coeffs
 

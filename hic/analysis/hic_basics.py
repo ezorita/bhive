@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import os.path
 from sklearn import mixture, manifold
 from scipy.cluster.hierarchy import linkage,fcluster
+from sklearn.cluster import SpectralClustering, KMeans
 import pdb, traceback, sys
   
 def scale_resolution(matrix, factor):
@@ -39,8 +40,12 @@ def center_diag(mat, offset):
     d[~np.isnan(d)] = td
     return mean_val, span
 
-def interchromosomal_clusters(cf,k,cluster_file):
+def interchromosomal_clusters(cf,k,cluster_file,algorithm='eigh-kmeans',interchr_mat=None,out_file='global_clusters.out'):
+    if algorithm not in ['eigh-gmix','eigh-kmeans','spec-kmeans']:
+        print "error: algorithm must be either 'eigh-gmix', 'eigh-kmeans' or 'spec-kmeans'"
+        
     clusters = {}
+    print "[interchromosomal_clusters] Begin: k={}, cluster_file={}".format(k,cluster_file)
     # Read and parse intrachromosomal clusters.
     fc = open(cluster_file,"r")
     for line in fc:
@@ -51,43 +56,67 @@ def interchromosomal_clusters(cf,k,cluster_file):
             clusters[chr] = []
         clusters[chr].append(np.array([int(v) for v in clust]))
 
+    print "computing interchromosomal matrix..."
     # Compute interchromosomal sums.
-    mat_shape = 0
-    offset = {}
-    for chr in clusters:
-        offset[chr] = mat_shape
-        mat_shape += len(clusters[chr])
+    if interchr_mat == None:
+        mat_shape = 0
+        offset = {}
+        for chr in clusters:
+            offset[chr] = mat_shape
+            mat_shape += len(clusters[chr])
 
-    mat    = np.zeros((mat_shape,mat_shape))
-    normat = np.zeros((mat_shape,mat_shape))
-    for i in xrange(0,len(clusters)):
-        for j in xrange(i+1,len(clusters)):
+        mat    = np.zeros((mat_shape,mat_shape))
+        normat = np.zeros((mat_shape,mat_shape))
+
+        # Iterate over all interchromosomal combinations
+        for i in xrange(0,len(clusters)):
             chr_i = clusters.keys()[i]
-            chr_j = clusters.keys()[j]
-            ploid = (1 if chr_i != 'chrX' and chr_j != 'chrX' else 2)
-            hic_m = cf.matrix(balance=False).fetch(chr_i,chr_j)
-            for ki,clu_i in enumerate(clusters[chr_i]):
-                for kj,clu_j in enumerate(clusters[chr_j]):
-                    print "{}:{},{}:{}".format(chr_i,ki,chr_j,kj)
-                    sumv = np.sum(hic_m[clu_i,:][:,clu_j]) * ploid
-                    mat[offset[chr_i]+ki,offset[chr_j]+kj] = mat[offset[chr_j]+kj,offset[chr_i]+ki] = sumv
-                    normat[offset[chr_i]+ki,offset[chr_j]+kj] = normat[offset[chr_j]+kj,offset[chr_i]+ki] = sumv/float(len(clu_i))/float(len(clu_j))
-
+            ploid_i = (1 if chr_i != 'chrX' else 2)
+            sys.stdout.write("{} -> ".format(chr_i));
+            for j in xrange(i+1,len(clusters)):
+                chr_j = clusters.keys()[j]
+                sys.stdout.write("{},".format(chr_j))
+                ploid_j = (1 if chr_j != 'chrX' else 2)
+                hic_m = cf.matrix(balance=False).fetch(chr_i,chr_j)
+                # Cluster combinations.
+                for ki,clu_i in enumerate(clusters[chr_i]):
+                    for kj,clu_j in enumerate(clusters[chr_j]):
+                        sumv = np.sum(hic_m[clu_i,:][:,clu_j]) * ploid_i * ploid_j
+                        mat[offset[chr_i]+ki,offset[chr_j]+kj] = mat[offset[chr_j]+kj,offset[chr_i]+ki] = sumv
+                        normat[offset[chr_i]+ki,offset[chr_j]+kj] = normat[offset[chr_j]+kj,offset[chr_i]+ki] = sumv/float(len(clu_i))/float(len(clu_j))
+            # Newline.
+            sys.stdout.write('\n')
+        # Store matrices for future processing
+        np.save('interchr_normat.npy',normat)
+        np.save('interchr_sums.npy',mat)
+        
+    else:
+        print "Using user-provided interchromosomal matrix for cluster computation."
+        normat = interchr_mat
+        
     N = normat.shape[0]
-    w, v = scipy.linalg.eigh(normat, eigvals=(N-k,N-1))
+    print "computing clusters, algorithm {}...".format(algorithm)
+    if algorithm == 'spec-kmeans':
+        spect_clu = SpectralClustering(n_clusters=k, eigen_solver='arpack', affinity='rbf', assign_labels='kmeans', n_jobs=8)
+        hic_clust = spect_clu.fit_predict(normat)
+    else:
+        w, v = scipy.linalg.eigh(normat, eigvals=(N-k,N-1))
+        if algorithm == 'eigh-gmix':
+            gmix = mixture.GaussianMixture(n_components=k, covariance_type='full', tol=1e-4, max_iter=1000)
+            gmix.fit(v)
+            hic_clust = gmix.predict(v)
+        elif algorithm == 'eigh-kmeans':
+            km = KMeans(n_clusters=k,n_jobs=8)
+            hic_clust = km.fit_predict(w*v)
 
-    gmix = mixture.GaussianMixture(n_components=k, covariance_type='full', tol=1e-4, max_iter=1000)
-    gmix.fit(v)
-    gmm_clust = gmix.predict(v)
-
-    clu_idx = np.argsort(gmm_clust)
+    clu_idx = np.argsort(hic_clust)
     P = np.zeros(normat.shape)
     P[np.arange(0,len(clu_idx)),clu_idx] = 1
     # Permute rows and columns.
     W_clust = np.dot(np.dot(P,normat),np.linalg.inv(P))
     plt.matshow(W_clust,cmap=plt.cm.bwr)
 
-    clust_cnt = [(g[0], len(list(g[1]))) for g in itertools.groupby(sorted(gmm_clust))]
+    clust_cnt = [(g[0], len(list(g[1]))) for g in itertools.groupby(sorted(hic_clust))]
     # Compute cluster limits
     cnt = np.zeros(k+1,dtype=int)
     for i in xrange(k):
@@ -98,19 +127,20 @@ def interchromosomal_clusters(cf,k,cluster_file):
         plt.plot([0,l], [x,x], color='k', linestyle='-', linewidth=1)
         plt.plot([x,x], [0,l], color='k', linestyle='-', linewidth=1)
 
-    with open('global_clusters.out','w+') as fo:
+    print "writing results to {}...".format(out_file)
+    with open(out_file,'w+') as fo:
         c_id = 0
         for i in xrange(0,len(clusters)):
             chr_i = clusters.keys()[i]
             for ki,clu_i in enumerate(clusters[chr_i]):
-                fo.write("{}\t{}\t{}\t{}\n".format(clusters.keys()[i],ki,gmm_clust[c_id],','.join([str(n) for n in clu_i])))
+                fo.write("{}\t{}\t{}\t{}\n".format(clusters.keys()[i],ki,hic_clust[c_id],','.join([str(n) for n in clu_i])))
                 c_id += 1
-    
-    # Now normalize by cluster size.
-    # e.g. chr1 with 15 chr will have more bins in each chr than chr22. Hence, we must normalize by row/column. So that each cell has a unit of contacts/bin^2.
-    
+    print "[interchromosomal_clusters] Done."
 
-def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,corr_diags=0,max_sample_size=50000,coeffs=None,coeffs_gw=None,seed=None,max_resampling_attempts=10,rearrange_clusters=False,use_ice=False,tsne_precluster=True):
+def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,pre_corr_diags=0, corr_diags = 1,max_sample_size=50000,coeffs=None,coeffs_gw=None,seed=None,max_resampling_attempts=10,rearrange_clusters=False,use_ice=False,algorithm='eigh-kmeans'):
+    if algorithm not in ['eigh-gmix','eigh-kmeans','spec-kmeans']:
+        print "error: algorithm must be either 'eigh-gmix', 'eigh-kmeans' or 'spec-kmeans'"
+        return
     if not use_ice:
         if coeffs is None and coeffs_gw is None:
             print 'computing coeffs...'
@@ -170,13 +200,16 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,corr_diags=0,ma
                 continue
                 
             # Remove diagonals before correlation
-            if corr_diags > 0:
-                m_cor = np.corrcoef(np.triu(m_samp,corr_diags) + np.tril(m_samp,-corr_diags))
+            if pre_corr_diags > 0:
+                m_cor = np.corrcoef(np.triu(m_samp,pre_corr_diags) + np.tril(m_samp,-pre_corr_diags))
             else:
                 m_cor = np.corrcoef(m_samp)
 
-            # Remove correlation diagonal
-            np.fill_diagonal(m_cor,0)
+            # Remove diagonals after correlation
+            if corr_diags > 1:
+                m_cor = np.triu(m_cor,corr_diags) + np.tril(m_cor,-corr_diags)
+            else:
+                np.fill_diagonal(m_cor,0)
 
             # Increase correlation contrast (5-95 percentiles)
             #m_cor = m_cor - np.median(m_cor[np.triu_indices(ssize,1)])
@@ -184,24 +217,32 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,corr_diags=0,ma
             max_cor_val = np.percentile(m_cor[np.triu_indices(ssize,1)],95)
             m_cor[np.where(m_cor < min_cor_val)] = min_cor_val
             m_cor[np.where(m_cor > max_cor_val)] = max_cor_val
+            return m_cor
 
-            # Spectral clustering
             N = m_cor.shape[0]
             eig_dim = min(N,eig_dim)
             try:
-                print "spectral clustering..."
-                w, v = scipy.linalg.eigh(m_cor, eigvals=(N-eig_dim,N-1))
-                if tsne_precluster:
-                    print "t-SNE to k=3..."
-                    v_clust = manifold.TSNE(n_components=3).fit_transform(v)
+                if algorithm == 'spec-kmeans':
+                    print "spectral clustering + k-means (k={}) with RBF-generated affinity matrix...".format(k)
+                    # some chromosomes crash when using precomputed similarity matrices.
+                    # however using RBF seems to give meaningful clustering.
+                    spect_clu = SpectralClustering(n_clusters=k, eigen_solver='arpack', affinity='precomputed', assign_labels='kmeans', n_jobs=8)
+                    hic_clust = spect_clu.fit_predict(m_cor)
                 else:
-                    v_clust = v
-                # Cluster eigenvectors using Gaussian Mixture
-                print "cluster identification with GaussianMixture..."
-                gmix = mixture.GaussianMixture(n_components=k, covariance_type='full', tol=1e-4, max_iter=1000)
-                gmix.fit(v_clust)
-                gmm_clust = gmix.predict(v_clust)
-                # TODO: Try t-sne instead of GaussMix
+                    print "spectral clustering:\ncomputing SVD (eigh)..."
+                    w, v = scipy.linalg.eigh(m_cor, eigvals=(N-eig_dim,N-1))
+
+                    if algorithm == 'eigh-gmix':
+                        # Cluster eigenvectors using Gaussian Mixture
+                        print "cluster identification with GaussianMixture (k={})...".format(k)
+                        gmix = mixture.GaussianMixture(n_components=k, covariance_type='full', tol=1e-4, max_iter=1000)
+                        gmix.fit(v)
+                        hic_clust = gmix.predict(v)
+                    elif algorithm == 'eigh-kmeans':
+                        # Cluster eigenvalue/eigenvector products with kmeans.
+                        print 'cluster identification with k-means (k={})...'.format(k)
+                        km = KMeans(n_clusters=k,n_jobs=8)
+                        hic_clust = km.fit_predict(w*v)
             except:
                 print "error while clustering. resampling..."
                 continue
@@ -214,7 +255,7 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,corr_diags=0,ma
         # Rearrange clusters for visualization
         # Make cluster index list
         clu_idx = [list() for _ in xrange(k)]
-        for i,c in enumerate(gmm_clust):
+        for i,c in enumerate(hic_clust):
             clu_idx[c].append(i)
 
         if not rearrange_clusters:

@@ -12,7 +12,35 @@ from sklearn import mixture, manifold
 from scipy.cluster.hierarchy import linkage,fcluster
 from sklearn.cluster import SpectralClustering, KMeans
 import pdb, traceback, sys
-  
+
+def full_matrix(chrlist, cf):
+    pad_width = 25
+    mat = None
+    for c in chrlist:
+        # Pad horizontal spacer
+        if mat is not None:
+            hpad = np.zeros((pad_width, mat.shape[1]))
+            mat = np.concatenate([mat, hpad], axis=0)
+            
+        # Get first matrix and vertical spacer
+        vmat = cf.matrix(balance=False).fetch(c,chrlist[0])
+        vpad = np.zeros((vmat.shape[0], pad_width))
+        
+        # Get other matrix combinations
+        for chr in chrlist[1:]:
+            cm = cf.matrix(balance=False).fetch(c,chr)
+            vmat = np.concatenate([vmat,vpad],axis=1)
+            vmat = np.concatenate([vmat,cm],axis=1)
+
+        # Concatenate matrices
+        if mat is None:
+            mat = vmat
+        else:
+            mat = np.concatenate([mat,vmat], axis=0)
+            
+    return mat
+            
+            
 def scale_resolution(matrix, factor):
     new_row = matrix.row // factor
     new_col = matrix.col // factor
@@ -108,6 +136,10 @@ def interchromosomal_clusters(cf,k,cluster_file,algorithm='eigh-kmeans',interchr
         elif algorithm == 'eigh-kmeans':
             km = KMeans(n_clusters=k,n_jobs=8)
             hic_clust = km.fit_predict(w*v)
+            with open('{}'.format(out_file+'.weig'),'w+') as outdata:
+                for (c,ev) in zip(hic_clust,w*v):
+                    outdata.write(str(c)+'\t'+'\t'.join([str(x) for x in ev[::-1]]) + '\n')
+
 
     clu_idx = np.argsort(hic_clust)
     P = np.zeros(normat.shape)
@@ -226,7 +258,6 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,max_sample_size
             max_cor_val = np.percentile(m_cor[np.triu_indices(ssize,1)],corr_outlier_pctl[1])
             m_cor[np.where(m_cor < min_cor_val)] = min_cor_val
             m_cor[np.where(m_cor > max_cor_val)] = max_cor_val
-            return m_cor
 
             N = m_cor.shape[0]
             eig_dim = min(N,eig_dim)
@@ -238,6 +269,7 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,max_sample_size
                     spect_clu = SpectralClustering(n_clusters=k, eigen_solver='arpack', affinity='precomputed', assign_labels='kmeans', n_jobs=8)
                     hic_clust = spect_clu.fit_predict(m_cor)
                 else:
+                    print "[{}] computing eigh...".format(chr)
                     w, v = scipy.linalg.eigh(m_cor, eigvals=(N-eig_dim,N-1))
 
                     if algorithm == 'eigh-gmix':
@@ -247,11 +279,17 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,max_sample_size
                         hic_clust = gmix.predict(v)
                     elif algorithm == 'eigh-kmeans':
                         # Cluster eigenvalue/eigenvector products with kmeans.
+                        print "[{}] computing clusters (k-means)...".format(chr)
                         km = KMeans(n_clusters=k,n_jobs=8)
-                        hic_clust = km.fit_predict(w*v)
-            except:
-                print "[{}] error while clustering. resampling ({})...".format(chr,cnt)
-                continue
+                        weig = w*v
+                        hic_clust = km.fit_predict(weig)
+                        # Write weighted eigenvectors
+                        with open('{}/clusters_{}.weig'.format(outdir,chr),'w') as outdata:
+                            for i in xrange(0,len(hic_clust)):
+                                outdata.write(str(sample_idx[chr][i])+'\t'+str(hic_clust[i])+'\t'+'\t'.join([str(x) for x in weig[i][::-1]])+'\n')
+            except Exception, e:
+                print "[{}] error while clustering: {}".format(chr,cnt,str(e))
+                return
             successful = True
 
         if cnt >= max_resampling_attempts:

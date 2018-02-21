@@ -1,4 +1,4 @@
-def print_help = {
+        def print_help = {
     log.info ''
     log.info '     BHIVE expression pipeline'
     log.info '-----------------------------------'
@@ -56,9 +56,11 @@ integ_file = Channel.from(ifile)
 ** Mapping options format:
 ** 
 ** 
-** datasets:
+** dna:
 ** biological replicate,technical replicate,filename/URL/{SRR,ERR,DRR} reference
-** 
+** rna:
+** biological replicate,technical replicate,filename/URL/{SRR,ERR,DRR} reference
+**
 */
 
 def options = ['bfs': null]
@@ -103,7 +105,7 @@ mfile.eachLine { line ->
         if (t[-1] =~ /^SRR|^ERR|^DRR/ || t[-1] =~ /^http|^ftp/) {
            file_getref << [ t[-1], [names[status],t[0],t[1]] ]
         } else {
-           reads = file("$t[-1]")
+           reads = file("${t[-1]}")
            if (reads.isFile()) {
               datasets << [ reads, [names[status],t[0],t[1]] ]
            } else {
@@ -230,7 +232,7 @@ process clusterPCRBarcodes {
 process computeExpression {
    // Process options
    tag ""
-   publishDir path:"${params.out}/", mode:'move'
+   publishDir path:"${params.out}/", mode:'symlink'
    // Cluster options
    cpus 1
    memory '4GB'
@@ -243,7 +245,7 @@ process computeExpression {
    //   file rnaseq_path from rnaseq_data
 
    output:
-   file 'hiv_expression.txt' into hiv_expression
+   file 'hiv_expression_all.txt' into hiv_expression
    file 'figures/*.pdf' into expression_figures
 
    script:
@@ -262,10 +264,10 @@ process computeExpression {
    dna = data.frame(brcd=c(),cnt=c(),rep=c(),tec=c())
    for (f in files) {
      name = strsplit(strsplit(f,'.',fixed=TRUE)[[1]][1],'_')[[1]]
-     data = subset(read.table(f,header=FALSE,as.is=TRUE), nchar(V1) < 22 & V2 > 10)
+     data = subset(read.table(f,header=FALSE,as.is=TRUE), nchar(V1) < 25 & V2 > 10)
      names(data) = c('brcd','cnt')
-     data\$rep = as.numeric(name[2])
-     data\$tec = as.numeric(name[3])
+     data\$rep = name[2]
+     data\$tec = name[3]
      if (name[1] == 'dna') {
        dna = rbind(dna,data)
      } else if (name[1] == 'rna') { 
@@ -273,68 +275,109 @@ process computeExpression {
      }
    }
 
-   # Merge barcodes by technical replicate.
-   all = merge(dna,rna,by=c('brcd','rep','tec'))
-   all\$expr = all\$cnt.y/all\$cnt.x
-   all\$logexpr = log10(all\$expr)
+   # Create figures dir
+   dir.create('figures', showWarnings = FALSE)
+
+   # Merge DNA technical replicates.
+   # Tech reps will rely only on RNA.
+   dna = aggregate(cnt ~ brcd+rep, data=dna, FUN=sum)
+
+   # Merge DNA and RNA keeping RNA tech rep info.
+   all = merge(dna, rna, by=c('brcd','rep'), all.x=TRUE)
+   names(all) = c('brcd','rep','dna','rna','tec')
+   if (sum(is.na(all\$rna)) > 0) {
+      all[is.na(all\$rna),]\$rna = 0
+      all[is.na(all\$tec),]\$tec = -1
+   }
+
+   # Compute logexpr
+   all\$logexpr = log1p(all\$rna/all\$dna)
 
    # Iterate over biological replicates
    reps = unique(all\$rep)
    for (r in reps) {
-     # Get data from this bio replicate
-     repdata = all[all\$rep == r,]
-     repdna  = dna[dna\$rep == r,]
-     reprna  = rna[rna\$rep == r,]
+      repdata = all[all\$rep == r,]
 
-     # Get technical replicate numbers
-     tecs = unique(repdata\$tec)
-     nt = length(tecs)
+      # Get technical replicate numbers
+      tecs = unique(repdata\$tec)
+      nt = length(tecs)
 
-     # Merge all technical replicates and store expr/counts in data frames
-     # Expression counts
-     dnacnt  = repdna[repdna\$tec == tecs[1],][c('brcd','cnt')]
-     rnacnt  = repdna[repdna\$tec == tecs[1],][c('brcd','cnt')]
-     # Scatterplot data
-     repexpr = repdata[repdata\$tec == tecs[1],][c('brcd','logexpr')]
-     names(repexpr) = c('brcd',paste('rep',paste(r,tecs[1])))
+      # Skip replicate -1 (no RNA data)
+      i = 1
+      if (tecs[i] < 0) {
+         i = i + 1
+      }
 
-     i = 2
-     while (i <= nt) {
-       # loop update
-       t = tecs[i]
-       i = i + 1
+      # Merge technical replicates
+      repexpr = repdata[repdata\$tec == tecs[i],][,c('brcd','logexpr')]
+      names(repexpr) = c('brcd',paste('rep',paste(r,tecs[i],sep='_'),sep='_'))
+      while (i < nt) {
+         i = i + 1
+         if (tecs[i] < 0) {
+            next
+         }
+         tecdata = repdata[repdata\$tec==tecs[i],][c('brcd','logexpr')]
+         names(tecdata) = c('brcd',paste('rep',paste(r,tecs[i],sep='_'),sep='_'))
+         repexpr = merge(repexpr,tecdata,by='brcd')
+      }
 
-       # Expression counts
-       dnacnt = merge(dnacnt, repdna[repdna\$tec == t,][c('brcd','cnt')], by='brcd', all=TRUE)
-       rnacnt = merge(rnacnt, reprna[reprna\$tec == t,][c('brcd','cnt')], by='brcd', all=TRUE)
-
-       # Scatterplot data
-       tecdata = repdata[repdata\$tec==t,][c('brcd','logexpr')]
-       names(tecdata) = c('brcd',paste('rep',paste(r,t,sep='_'),sep='_'))
-       repexpr = merge(repexpr,tecdata,by='brcd')
-     }
-
-     # Expression table by biological replicate
-     dnacnt = data.frame(brcd=dnacnt\$brcd,count=rowSums(dnacnt[,-1], na.rm=TRUE))
-     rnacnt = data.frame(brcd=rnacnt\$brcd,count=rowSums(rnacnt[,-1], na.rm=TRUE))
-     allcnt = merge(dnacnt,rnacnt,by='brcd')
-     names(allcnt) = c('brcd','dna','rna')
-     allcnt\$expr = scale(log10(allcnt\$rna/allcnt\$dna), scale=FALSE)
-     allcnt\$rep  = r
-
-     # Merge expression with integration sites
-     hivexpr = merge(integs, allcnt, by=c('brcd','rep'))
-
-     # Write table
-     write.table(hivexpr, file='hiv_expression.txt', sep='\\t', quote=FALSE, row.names=FALSE, col.names=TRUE)
-
-     # Create figures dir
-     dir.create('figures', showWarnings = FALSE)
-
-     # Cor plot
-     pdf(paste(paste('figures/expr_rep',r,sep='_'),'pdf',sep='.'))
-     corplot(repexpr[,-1])
-     dev.off()
+      # Make technical replicate corplot.
+      if (nrow(repexpr) > 0) {
+         pdf(paste(paste('figures/expr_rep',r,sep='_'),'pdf',sep='.'))
+         corplot(repexpr[,-1])
+         dev.off()
+      }
    }
+
+   # Aggregate RNA tech reps.
+   rna = aggregate(cnt ~ brcd+rep, data=rna, FUN=sum)
+
+   # Merge RNA and DNA by bio reps.
+   all = merge(dna, rna, by=c('brcd','rep'), all.x=TRUE, all.y=TRUE)
+   names(all) = c('brcd','rep','dna','rna')
+
+   # Set NA to zero.
+   all[is.na(all\$rna),]\$rna = 0
+   all[is.na(all\$dna),]\$dna = 0
+
+   # Compute expression score.
+   exprinfo = data.frame(brcd=all\$brcd,dna=all\$dna,rna=all\$rna,rep=all\$rep)
+
+   # Merge expression with integration sites
+   hivexpr = merge(integs, exprinfo, by=c('brcd','rep'), all.x=TRUE)
+
+   # Normalization by total DNA / total RNA of mapped barcodes.
+   normDNA = tapply(X=hivexpr\$dna,INDEX=hivexpr\$rep,sum,na.rm=T)
+   normRNA = tapply(X=hivexpr\$rna,INDEX=hivexpr\$rep,sum,na.rm=T)
+
+   normfactor = normDNA[hivexpr\$rep]/normRNA[hivexpr\$rep]
+
+   # Compute normalized (inter-replicate) expression score.
+   hivexpr\$exprscore = log1p(hivexpr\$rna / hivexpr\$dna * normfactor)
+   hivexpr[is.infinite(hivexpr\$exprscore),]\$exprscore = NA
+
+   # Write tablep
+   write.table(hivexpr, file='hiv_expression_all.txt', sep='\\t', quote=FALSE, row.names=FALSE, col.names=TRUE)
+   """
+}
+
+process removeLeaks {
+   // Process options
+   tag ""
+   publishDir path:"${params.out}/", mode:'move'
+   // Cluster options
+   cpus 1
+   memory '4GB'
+
+   input:
+   file expr_path from hiv_expression
+   file leak_src from file('src/remove_leaks.py')
+
+   output:
+   file 'hiv_expression_all_filter.txt' into hiv_expr_noleaks
+
+   script:
+   """
+   python ${leak_src} ${expr_path} > hiv_expression_all_filter.txt
    """
 }

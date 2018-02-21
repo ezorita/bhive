@@ -11,7 +11,9 @@ corplot <- function(dataset,cor.use="na.or.complete") {
   par(mfrow=c(rows,cols))
   # Remove infinite values -> NaN
   for (i in 1:length(data)) {
-      data[is.infinite(data[,i]),i] = NaN
+      if (sum(is.infinite(data[,i])) > 0) {
+          data[is.infinite(data[,i]),i] = NaN
+      }
   }
   corvals = cor(data, use=cor.use)
   for (j in 1:cols) {

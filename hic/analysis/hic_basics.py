@@ -169,7 +169,7 @@ def interchromosomal_clusters(cf,k,cluster_file,algorithm='eigh-kmeans',interchr
                 c_id += 1
     print "[interchromosomal_clusters] Done."
 
-def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,max_sample_size=50000,outlier_pctl=90,corr_outlier_pctl=[5,95],balance_corr_median=False,coeffs=None,coeffs_gw=None,seed=None,max_resampling_attempts=10,rearrange_clusters=False,use_ice=False,algorithm='eigh-kmeans',outdir='.'):
+def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,max_sample_size=50000,outlier_pctl=90,corr_outlier_pctl=[5,95],balance_corr_median=False,coeffs=None,coeffs_gw=None,seed=None,max_resampling_attempts=10,rearrange_clusters=False,use_ice=False,algorithm='eigh-kmeans',outdir='.',out_allchr='clusters_all.txt'):
     if algorithm not in ['eigh-gmix','eigh-kmeans','spec-kmeans']:
         print "error: algorithm must be either 'eigh-gmix', 'eigh-kmeans' or 'spec-kmeans'"
         return
@@ -289,7 +289,8 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,max_sample_size
                                 outdata.write(str(sample_idx[chr][i])+'\t'+str(hic_clust[i])+'\t'+'\t'.join([str(x) for x in weig[i][::-1]])+'\n')
             except Exception, e:
                 print "[{}] error while clustering: {}".format(chr,cnt,str(e))
-                return
+                cnt = max_resampling_attempts
+                break
             successful = True
 
         if cnt >= max_resampling_attempts:
@@ -383,8 +384,13 @@ def cluster_compartments(cf,k,chrlist,eig_dim=None,contact_thr=1,max_sample_size
             fout.write("{}\t".format(chr))
             fout.write(','.join([str(i) for i in c]))
             fout.write('\n')
-            
         fout.close()
+        fall = open('{}/{}'.format(outdir,out_allchr),"a")
+        for c in clusters_idx[chr]:
+            fall.write("{}\t".format(chr))
+            fall.write(','.join([str(i) for i in c]))
+            fall.write('\n')
+        fall.close()
 
         '''
         # Make permutation matrix

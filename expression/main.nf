@@ -183,7 +183,7 @@ process extractPCRBarcodes {
 #!/usr/bin/env python
 import seeq
 import gzip
-MIN_BRCD_LEN = 15
+MIN_BRCD_LEN = 5
 
 # Helper functions.
 def getbarcode(matcher, txt):
@@ -264,7 +264,7 @@ process computeExpression {
    dna = data.frame(brcd=c(),cnt=c(),rep=c(),tec=c())
    for (f in files) {
      name = strsplit(strsplit(f,'.',fixed=TRUE)[[1]][1],'_')[[1]]
-     data = subset(read.table(f,header=FALSE,as.is=TRUE), nchar(V1) < 25 & V2 > 10)
+     data = subset(read.table(f,header=FALSE,as.is=TRUE), nchar(V1) < 25 & V2 >= 5)
      names(data) = c('brcd','cnt')
      data\$rep = name[2]
      data\$tec = name[3]
@@ -378,6 +378,6 @@ process removeLeaks {
 
    script:
    """
-   python ${leak_src} ${expr_path} > hiv_expression_all_filter.txt
+   python ${leak_src} <(sort -k3,3 -k4,4n ${expr_path}) > hiv_expression_all_filter.txt
    """
 }

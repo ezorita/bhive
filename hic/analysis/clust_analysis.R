@@ -1,9 +1,10 @@
-suppressmessages(library(GenomicRanges))
+suppressMessages(library(GenomicRanges))
 suppressMessages(library(gplots))
 suppressMessages(library(RColorBrewer))
 suppressMessages(library(ggplot2))
 suppressMessages(library(gridExtra))
 suppressMessages(library(scales))
+suppressMessages(library(Sushi))
 
 # Params
 hic.binsize  = 5e3
@@ -36,7 +37,7 @@ hp.ctrl.pol2 = 'annotations/chip_peaks/PolII_peaks/NA_peaks.narrowPeak'
 hp.samp.size = 200
 hp.samp.file = 'annotations/hp_ctrl.txt'
 hiv.gen.file = 'annotations/hiv_gen.txt'
-sup.enh.file = 'annotations/Jurkat_DBsuper_hg19.bed'
+sup.enh.file = 'annotations/Jurkat_SE_all.bed'
 hp.sen.file  = 'annotations/hp_sen.txt'
 hp.file      = 'annotations/hiv_hotspots.txt'
 sen.pcs.file = 'annotations/super_enh_ranges'
@@ -299,10 +300,14 @@ cat('[1.4.3] coverage: ',sum(as.numeric(sum(coverage(enh.gr)))),' nt\n',sep='')
 
 # 1.4.4 Read SuperEnhancer DB.
 cat('[1.4.4. SuperEnhancer data]\n')
-sen.data     <- read.table(sup.enh.file, header=F, col.names=c('chr','beg','end','name','id'))
-sen.gr       <- GRanges(seqnames = sen.data$chr, ranges = IRanges(start=sen.data$beg, end=sen.data$end))
-sen.data$cat <- "SuperEnhancer"
-sen.data$val <- 1
+sen.data     <- read.table(sup.enh.file, header=F, col.names=c('chr','beg','end'))
+sen.gr       <- reduce(GRanges(seqnames = sen.data$chr, ranges = IRanges(start=sen.data$beg, end=sen.data$end)))
+sen.data     <- data.frame(chr = seqnames(sen.gr),
+                           beg = start(sen.gr),
+                           end = end(sen.gr),
+                           id  = seq(1,length(sen.gr)),
+                           cat = "SuperEnhancer",
+                           val = 1)
 cat('[1.4.4] enhancer bed file: ',sup.enh.data,'\n',sep='')
 cat('[1.4.4] superenhancer intervals: ',length(sen.gr),'\n',sep='')
 cat('[1.4.4] coverage: ',sum(as.numeric(sum(coverage(sen.gr)))),' nt\n',sep='')
@@ -786,13 +791,105 @@ figure.fn <- paste(fig.dir,'hiv_density_3dpattern_category.pdf',sep='')
 cat('[4.5] HIV integration density (groups: 3D pattern) -> ',figure.fn,'\n',sep='')
 pdf(figure.fn,useDingbats=F,width=8,height=5)
 ggplot(data=clu.cat.hiv,aes(fill=cat,x=clust,y=integ.mb)) +
-    geom_bar(stat='identity',position='dodge',colour='black') +p
+    geom_bar(stat='identity',position='dodge',colour='black') +
     scale_fill_manual(name='Category',values=c(categ.colors)) +
     xlab('3D patterns') +
     ylab('HIV integrations per Mbp')
 dev.off()
 
 
+##
+## 4.6. HIV hotspot detection.
+##
+
+hp.count = 5
+hp.top.pctl = 25
+hp.span = GRanges()
+for (c in unique(seqnames(hiv.gr))) {
+    hp.chr = sort(hiv.gr[seqnames(hiv.gr) == c], ignore.strand = TRUE)
+    if (length(hp.chr) < hp.count) next;
+    hp.span = c(hp.span,
+                GRanges(seqnames = c,
+                        ranges   = IRanges(start = start(hp.chr)[1:(length(hp.chr)-hp.count+1)],end = end(hp.chr)[hp.count:length(hp.chr)])
+                        )
+                )
+}
+
+# Get Top 10% dense regions of hp.count.
+hp.count.gr = hp.span[order(hp.span@ranges@width)]
+hiv.hp.gr   = reduce(hp.count.gr[1:(round(length(hp.span)*hp.top.pctl/100)])
+hiv.hp.cnt  = findOverlaps_nw(hiv.hp.gr, hiv.gr, ignore.strand=TRUE)
+hiv.hp.cnt  = as.data.frame(table(hiv.hp.cnt@from))
+
+hiv.hp.gr$hiv.cnt = 0
+hiv.hp.gr[as.numeric(hiv.hp.cnt$Var1)]$hiv.cnt = hiv.hp.cnt$Freq
+hiv.hp.gr$hiv.dens.kb = hiv.hp.gr$hiv.cnt / width(hiv.hp.gr) * 1000
+hiv.hp.gr = hiv.hp.gr[order(hiv.hp.gr$hiv.dens.kb, decreasing=TRUE)]
+
+hiv.hp.clu.ov = findOverlaps_nw(hiv.hp.gr, clust.gr, ignore.strand=TRUE)
+hiv.hp.agg = aggregate(clust ~ hp.id, data= data.frame(hp.id = hiv.hp.clu.ov@from, clust=clust.gr[hiv.hp.clu.ov@to]$global.cluster), FUN=MaxTable)
+hiv.hp.gr$clust = NA
+hiv.hp.gr$clust[hiv.hp.agg$hp.id] = hiv.hp.agg$clust
+
+hp.clu.integ = table(factor(hiv.hp.gr$clust, c('A1','A2','B1','B2','B3')))
+hp.clu.bg    = table(factor(clust.gr$global.cluster, c('A1','A2','B1','B2','B3')))
+hp.clu.df    = data.frame(clu=names(hp.clu.integ),
+                          xmin=c(0,cumsum(as.vector(hp.clu.bg))[1:length(hp.clu.bg)-1]),
+                          xmax=cumsum(as.vector(hp.clu.bg)),
+                          ymin=0,
+                          ymax=sqrt((as.vector(hp.clu.integ)/sum(hp.clu.integ))/(as.vector(hp.clu.bg)/sum(hp.clu.bg))),
+                          ratio = (as.vector(hp.clu.integ)/sum(hp.clu.integ))/(as.vector(hp.clu.bg)/sum(hp.clu.bg))
+                          )
+
+# Spie chart of hotspot localization (3D pattern)
+figure.fn <- paste(fig.dir,'hiv_hotspot',hp.count,'_3dpattern_spie.pdf',sep='')
+cat('[4.5] 3D pattern localization of hotspots (spie chart) -> ',figure.fn,'\n',sep='')
+pdf(figure.fn,useDingbats=F,width=8,height=5)
+ggplot(hp.clu.df) +
+    geom_hline(yintercept=sqrt(c(0.5,2,5,10)),alpha=0.5,linetype="dotted") +
+    geom_hline(yintercept=sqrt(c(1)),alpha=0.5) +
+    geom_rect(aes(fill=clu,ymin=ymin,ymax=ymax,xmin=xmin,xmax=xmax),alpha=0.5,color='black') +
+    scale_fill_manual(name='3D Pattern',values=clust.colors) +
+    coord_polar('x') +
+    theme_minimal() +
+    theme(axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank(),axis.ticks.y=element_blank(),axis.text.y=element_blank(),panel.grid.major=element_blank(),panel.grid.minor=element_blank()) +
+    ggtitle('3D pattern of HIV hotspots')
+dev.off()
+
+# Boxplot of HIV hotspot density (By 3D pattern).
+figure.fn <- paste(fig.dir,'hiv_hotspot',hp.count,'_dens_3dpattern_boxplot_A1_A2.pdf',sep='')
+cat('[4.5] hotspot density distribution by 3D pattern -> ',figure.fn,'\n',sep='')
+pdf(figure.fn,useDingbats=F,width=5,height=8)
+hiv.hp.gr.a12 = hiv.hp.gr[hiv.hp.gr$clust %in% c('A1','A2')]
+hp.box.df = data.frame(clu = hiv.hp.gr.a12$clust, hiv.dens.kb = hiv.hp.gr.a12$hiv.dens.kb)
+ggplot(hp.box.df, aes(x = clu, fill = clu, y=hiv.dens.kb)) +
+    geom_boxplot(outlier.size=0.3) +
+    scale_fill_manual(name='3D Pattern',values=clust.colors) +
+    theme_minimal() +
+    ylab('Hotspot density (integs/kbp)') +
+    xlab('3D Pattern')
+dev.off()
+
+# Hotspot proximity to Super Enhancer 
+hiv.hp.se.ov <- findOverlaps_nw(hiv.hp.gr, sen.gr+5000, ignore.strand=TRUE)
+hiv.hp.gr$sen.close = 'No SuperEnhancer'
+hiv.hp.gr[hiv.hp.se.ov@from]$sen.close = 'Close to SuperEnhancer'
+hiv.hp.sen.df = as.data.frame(table(sen.close=hiv.hp.gr$sen.close))
+hiv.hp.sen.df$xmin = c(0,hiv.hp.sen.df$Freq[1])
+hiv.hp.sen.df$xmax = cumsum(hiv.hp.sen.df$Freq)
+hiv.hp.sen.df$ymin = 0
+hiv.hp.sen.df$ymax = 1
+
+figure.fn <- paste(fig.dir,'hiv_hotspot',hp.count,'_superenhancer.pdf',sep='')
+cat('[4.5] hotspots and superenhancers -> ',figure.fn,'\n',sep='')
+pdf(figure.fn,useDingbats=F,width=8,height=5)
+ggplot(hiv.hp.sen.df) +
+    geom_rect(aes(fill=sen.close, xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax), color='black') +
+    coord_polar('x') +
+    theme(axis.title.x=element_blank(),axis.ticks.y=element_blank(),axis.text.y=element_blank(),panel.grid.major=element_blank(),panel.grid.minor=element_blank(),panel.background=element_blank()) +
+    guides(fill=guide_legend(title='')) +
+    ggtitle('HIV hotspots and Super Enhancers (+5kb up/downstream)')
+dev.off()
 
 ##
 ## 5. Gene expression in 3D patterns
@@ -820,14 +917,14 @@ genes.expr.clu$clust <- factor(genes.expr.clu$clust,c("A1","A2","B1","B2","B3"))
 # Barplot of endogenous expression in 3D patterns.
 figure.fn <- paste(fig.dir,'expr_endog_3dpattern.pdf',sep='')
 cat('[5.1] Endogenous expression distribution in 3D patterns (boxplot) -> ',figure.fn,'\n',sep='')
-pdf(figure.fn, useDingbats=F, width=7, height=7)
+pdf(figure.fn, useDingbats=F, width=5, height=7)
 ggplot(genes.expr.clu, aes(x = clust, y = expr, fill = clust)) +
     geom_boxplot(outlier.size=0.3) +
-    scale_y_continuous(trans='log10') +
+    scale_y_continuous(trans='log10', limits=c(1e-3,1e5), breaks=c(1e-2,1,1e2,1e4), minor_breaks=c(1e-3,1e-1,10,1e3)) +
     scale_fill_manual(name='',values = clust.colors) +
     theme_minimal() +
     xlab('') +
-    ylab('Expression of Jurkat active genes [tpm]')
+    ylab('Expression of Jurkat active genes [tpm]') 
 dev.off()
 
 # 3D pattern distribution by expression levels.
@@ -850,7 +947,7 @@ ggplot(genes.all.clu.cnt, aes(x=pctl, y=Freq, fill=clust)) +
     theme_minimal()
 dev.off()
 
-
+p
 ##
 ## 5.2 HIV expression in 3D patterns
 ##
@@ -2269,6 +2366,75 @@ ggplot(data=hdg.signal.all[hdg.signal.all$intv == c('No HIV','Top 1%','Top 5%-10
     facet_wrap(~chip+intv+anchor, scales='free_y')
 dev.off()
 
+## Genome browser-like figure.
+
+# Read clusters in bed format, reassign cluster order. (Update with each cluster computation)
+clust.bed = read.table('3d_patterns/global_clusters.bed', header=F, col.names=c('chrom','start','end','name'))
+clust.bed$score = 1 #B3
+clust.bed$score[clust.bed$name == 1] = 5 #A1
+clust.bed$score[clust.bed$name == 2] = 3 #B1
+clust.bed$score[clust.bed$name == 3] = 2 #B2
+clust.bed$score[clust.bed$name == 4] = 4 #A2
+
+# HIV and SE datasets in BED format.
+hiv.bed = data.frame(chrom=hiv.gr@seqnames, start=hiv.gr@ranges@start, end=hiv.gr@ranges@start+1)
+sen.bed = data.frame(chrom=sen.data$chr, start=sen.data$beg, end=sen.data$end)
+
+# Define Figure regions.
+chr  = c('chr16','chr2','chr1','chr1','chr1','chr17','chr19','chr5')
+cbeg = c(73e6,96e6,40e6,157e6,225e6,62e6,5e6,50e6)
+cend = c(77e6,100e6,44e6,161e6,235e6,66e6,30e6,60e6)
+hcol = c(100,100,100,100,200,100,300,200)
+
+signals = c('H3K27Ac','H3K9me3','CTCF','BRD4','MYC')
+
+# Iterate over all Figure regions.
+for (i in seq(1,length(chr))) {
+  # Call Python script, store to file (autogen name).
+  hic_coords = paste(chr[i],':',formatC(cbeg[i],format='d'),'-',formatC(cend[i],format='d'),sep='')
+  cat('Fetching matrix from Hi-C file for region:',hic_coords,'\n')
+  system(paste('python src/cooler_to_mat.py', cool.file, hic_coords,'annotations/hic_tmp_mat.txt'))
+  # Read Hi-C matrix.
+  hic_m = as.matrix(read.table('annotations/hic_tmp_mat.txt', header=T, row.names=1, check.names=F))
+
+  # Figure with TSS/TES signal for each chip-seq profile (autogen name based on region).
+  figure.fn <- paste(fig.dir,'genome_',chr[i],'_',formatC(cbeg[i],format='d'),'_',formatC(cend[i],format='d'),'.pdf',sep='')
+  cat('[8.3] Genome browser-like figure ',chr[i],':',cbeg[i],'-',cend[i],' -> ',figure.fn,'\n',sep='')
+  pdf(figure.fn, useDingbats=F, width=14, height=14)
+  sigcnt = length(signals)
+  layout(matrix(seq(1,sigcnt+4),sigcnt+4,1,byrow=T), widths=c(1), heights=c(c(20,3,5,1),rep(2,sigcnt-1),4))
+  par(mar=c(1,3.5,1,2))
+  phic = plotHic(log1p(hic_m), chr[i], cbeg[i], cend[i], max_y = hcol[i], zrange=c(0,6), palette = SushiColors(7))
+  par(mar=c(0,3.5,0,2))
+  plotBed(beddata = hiv.bed, chrom=chr[i], chromstart=cbeg[i], chromend=cend[i], ylab='HIV')
+  mtext('HIV',side=2,line=1.75,cex=0.6,font=2)
+  #mtext('HIV',side=2,line=1.75,cex=1,font=2)
+  par(mar=c(0,3.5,0,2))
+  clust.bed.allrows = rbind(clust.bed,data.frame(chrom=rep(chr[i],5),start=rep(cbeg[i],5),end=rep(cbeg[i]+1),name=rep(1,5),score=c(1,2,3,4,5)))
+  plotBed(beddata = clust.bed.allrows, chrom=chr[i], chromstart=cbeg[i], chromend=cend[i], colorby=clust.bed.allrows$score, colorbycol=SushiColors(5), row='given',rownumber=clust.bed.allrows$score,type='region',rowlabels=rev(c('A1','A2','B1','B2','B3')),rowlabelcex=0.75, plotbg='grey95')
+  par(mar=c(0,3.5,0,2))
+  plotBed(beddata = sen.bed, chrom=chr[i], chromstart=cbeg[i], chromend=cend[i], rowlabels='SE', rowlabelcex=0.75, rownumber=1, row='given')
+  for (signame in signals) {
+      cr.sub = cm.raw.gr[cm.raw.gr@seqnames == chr[i] & cm.raw.gr@ranges@start >= cbeg[i] & cm.raw.gr@ranges@start < cend[i] & cm.raw.gr$name == signame]
+      bg.data = data.frame(chrom=cr.sub@seqnames, start=cr.sub@ranges@start, end=cr.sub@ranges@start+cr.sub@ranges@width-1, value=cr.sub$score)
+      if (signame == signals[length(signals)]) {
+          par(mar=c(3.5,3.5,0,2))
+          plotBedgraph(bg.data, chr[i], cbeg[i], cend[i])
+          axis(side=2,las=2,cex=0.5,font=2)
+          mtext(signame,side=2,line=1.75,cex=0.6,font=2)
+          labelgenome(chr[i],cbeg[i],cend[i],scale='Mb')
+      } else {
+          par(mar=c(0,3.5,0,2))
+          plotBedgraph(bg.data, chr[i], cbeg[i], cend[i])
+          axis(side=2,las=2,cex=0.5,font=2)
+          mtext(signame,side=2,line=1.75,cex=0.6,font=2)
+      }
+  }
+  dev.off()
+}
+
+
+
 
 
 ##
@@ -2306,6 +2472,37 @@ ggplot(sen.gen.pcs, aes(y=..density..,x=pcs, colour=hiv, linetype=act)) +
     ggtitle('Clustering of HIV-dense genes with SuperEnhancers (Jurkat)') +
     theme_minimal()
 dev.off()
+
+##
+## 9.2. Comparison of SuperEnhancers by Cluster
+##
+sen.extend.region = 5e3
+sen.clu.ov = findOverlaps_nw(sen.gr + sen.extend.region, clust.gr, ignore.strand=TRUE)
+sen.clu.idx = data.frame(sen.id = sen.clu.ov@from, clu = clust.gr[sen.clu.ov@to]$global.cluster)
+sen.clu.idx = aggregate(clu ~ sen.id, data = sen.clu.idx, FUN=MaxTable)
+sen.gr$clust = NA
+sen.gr$clust[sen.clu.idx$sen.id] = sen.clu.idx$clu
+sen.hiv.ov = findOverlaps_nw(sen.gr + sen.extend.region, hiv.gr, ignore.strand=TRUE)
+sen.hiv.cnt = aggregate(cnt ~ sen.id, data= data.frame(sen.id = sen.hiv.ov@from, cnt=sen.hiv.ov@to), FUN=length)
+sen.gr$hiv.cnt = 0
+sen.gr$hiv.cnt[sen.hiv.cnt$sen.id] = sen.hiv.cnt$cnt
+sen.gr$hiv.dens.kb = sen.gr$hiv.cnt / sen.gr@ranges@width * 1e3
+
+hiv.sen.df = data.frame(clust = sen.gr$clust, width = sen.gr@ranges@width, hiv.cnt = sen.gr$hiv.cnt)
+hiv.sen.agg = aggregate(. ~ clust, data=hiv.sen.df, FUN=sum)
+hiv.sen.agg$hiv.dens.mb = hiv.sen.agg$hiv.cnt / hiv.sen.agg$width * 1e6
+
+# Barplot of categories grouped by 3d pattern.
+figure.fn <- paste(fig.dir,'hiv_density_superenhancer_clust.pdf',sep='')
+cat('[4.5] HIV integration density (groups: SuperEnhancer) -> ',figure.fn,'\n',sep='')
+pdf(figure.fn,useDingbats=F,width=5,height=8)
+ggplot(data=hiv.sen.agg, aes(fill=clust,x=clust,y=hiv.dens.mb)) +
+    geom_bar(stat='identity',position='dodge',colour='black') +
+    scale_fill_manual(name='Clusters',values=c(clust.colors)) +
+    xlab('3D patterns') +
+    ylab('HIV integrations in SuperEnhancers per Mbp')
+dev.off()
+
 
 
 ##

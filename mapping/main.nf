@@ -358,8 +358,9 @@ for fname in files:
 
 
 // Remove duplicate barcodes.
-// If duplicates are integrated in the same locus, keep only one copy.
-// Except if they come from different replicates.
+// If duplicates are integrated in the same locus and with the same barcode,
+// keep the copy with more reads.
+
 process removeDuplicates {
    // Process options
    publishDir path: "${params.out}/", mode: 'copy'
@@ -382,23 +383,26 @@ integs = {}
 with open('${integs}','r') as f:
   for line in f:
     if line[0] == '#' or line[0:4] == 'brcd': continue
-    [brcd,chr,locus,strand,reads,mapq,rep] = line.rstrip().split('\\t')
-    key = brcd+rep
-    if not integs.has_key(key):
-      integs[key] = [chr,int(locus),line]
+    [brcd,chr,locus,strand,reads] = line.split('\\t')[0:5]
+    if brcd == 'NA':
+      continue
+    if not integs.has_key(brcd):
+      integs[brcd] = [[chr,int(locus),strand,int(reads),line],]
     else:
-      # If len is 1, it means it has been already discarded (set to 0).
-      if len(integs[key]) == 1: continue
-      # Exists but not yet compared.
-      else:
-        if integs[key][0] == chr and abs(integs[brcd][1]-int(locus)) < max_dist: continue
-        else:
-          integs[key] = [0]
+      add = True
+      for i,integ in enumerate(integs[brcd]):
+        if integ[0] == chr and abs(integ[1]-int(locus)) < max_dist and integ[2] == strand:
+          add = False
+          if integ[3] < int(reads):
+            integs[brcd][i] = [chr,int(locus),strand,int(reads),line]
+          break
+      if add:
+        integs[brcd].append([chr,int(locus),strand,int(reads),line])
 
 with open('hiv_integrations.txt','w+') as fout:
   fout.write('brcd\\tchr\\tlocus\\tstrand\\treads\\tmapq\\trep\\n')
-  for v in integs.values():
-    if len(v) > 1:
-      fout.write(v[2])
+  for brcd in integs:
+    for integ in integs[brcd]:
+      fout.write(integ[4])
 """
 }

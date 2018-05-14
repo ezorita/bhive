@@ -276,7 +276,9 @@ process computeExpression {
    }
 
    # Create figures dir
-   dir.create('figures', showWarnings = FALSE)
+   if (dir.exists('figures') == FALSE) {
+      dir.create('figures', showWarnings = FALSE, mode = "0777")
+   }
 
    # Merge DNA technical replicates.
    # Tech reps will rely only on RNA.
@@ -313,7 +315,7 @@ process computeExpression {
       names(repexpr) = c('brcd',paste('rep',paste(r,tecs[i],sep='_'),sep='_'))
       while (i < nt) {
          i = i + 1
-         if (tecs[i] < 0) {
+         if (as.numeric(tecs[i]) < 0) {
             next
          }
          tecdata = repdata[repdata\$tec==tecs[i],][c('brcd','logexpr')]
